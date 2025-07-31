@@ -1,0 +1,22 @@
+extends: ''
+rules:
+  servers-present:
+    description: "Debe haber al menos un servidor definido."
+    given: "$.servers"
+    then:
+      function: truthy
+
+  openapi-field:
+    description: "El campo openapi debe estar presente y ser 3.0.0+."
+    given: "$.openapi"
+    then:
+      function: pattern
+      functionOptions:
+        match: "^3\\.0\\.[0-9]+$"
+
+  operationId-unique:
+    description: "operationId debe ser único por operación."
+    given: "$.paths..*"
+    then:
+      field: operationId
+      function: unique
