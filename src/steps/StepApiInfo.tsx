@@ -1,26 +1,36 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useContract } from '../context/ContractContext';
 
 export default function StepApiInfo() {
   const navigate = useNavigate();
+  const { apiInfo, setApiInfo } = useContract();
 
-  const [apiInfo, setApiInfo] = useState({
-    name: '',
-    description: '',
-    scope: '',
-    baseUrl: '',
+  const [local, setLocal] = useState({
+    name: apiInfo.name,
+    description: (apiInfo as any).description || '',
+    scope: apiInfo.type,
+    baseUrl: apiInfo.baseUrl,
   });
-
   const [errors, setErrors] = useState<{ baseUrl?: string }>({});
+
+  useEffect(() => {
+    setLocal({
+      name: apiInfo.name,
+      description: (apiInfo as any).description || '',
+      scope: apiInfo.type,
+      baseUrl: apiInfo.baseUrl,
+    });
+  }, [apiInfo]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setApiInfo((prev) => ({ ...prev, [name]: value }));
+    setLocal((prev) => ({ ...prev, [name]: value }));
   };
 
   const validate = () => {
     const newErrors: typeof errors = {};
-    if (!/^https?:\/\/.+/i.test(apiInfo.baseUrl)) {
+    if (!/^https?:\/\/.+/i.test(local.baseUrl)) {
       newErrors.baseUrl = 'URL inválida (debe comenzar con http:// o https://)';
     }
     setErrors(newErrors);
@@ -29,7 +39,13 @@ export default function StepApiInfo() {
 
   const handleNext = () => {
     if (!validate()) return;
-    navigate('/resources');
+    setApiInfo({
+      name: local.name,
+      type: local.scope,
+      version: apiInfo.version,
+      baseUrl: local.baseUrl,
+    });
+    navigate('/wizard/resources');
   };
 
   return (
@@ -42,7 +58,7 @@ export default function StepApiInfo() {
           <input
             type="text"
             name="name"
-            value={apiInfo.name}
+            value={local.name}
             onChange={handleChange}
             className="mt-1 w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
@@ -52,7 +68,7 @@ export default function StepApiInfo() {
           <label className="block font-medium text-sm text-gray-700">Descripción</label>
           <textarea
             name="description"
-            value={apiInfo.description}
+            value={local.description}
             onChange={handleChange}
             className="mt-1 w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
@@ -62,7 +78,7 @@ export default function StepApiInfo() {
           <label className="block font-medium text-sm text-gray-700">Scope</label>
           <select
             name="scope"
-            value={apiInfo.scope}
+            value={local.scope}
             onChange={handleChange}
             className="mt-1 w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
@@ -78,7 +94,7 @@ export default function StepApiInfo() {
           <input
             type="text"
             name="baseUrl"
-            value={apiInfo.baseUrl}
+            value={local.baseUrl}
             onChange={handleChange}
             className={`mt-1 w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 ${
               errors.baseUrl ? 'border-red-500 focus:ring-red-500' : 'focus:ring-blue-500'
