@@ -1,6 +1,14 @@
-import { useState } from 'react';
+// src/steps/StepOperations.tsx
+import { useState, useEffect, useCallback } from 'react';
 import { useContract } from '../context/ContractContext';
-import type { Operation, Parameter, RequestBody, Response, ErrorDef } from '../types/contract';
+import type {
+  Operation,
+  Parameter,
+  RequestBody,
+  Response,
+  ErrorDef,
+  Resource,
+} from '../types/contract';
 import { useNavigate } from 'react-router-dom';
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
@@ -10,9 +18,57 @@ function checkPathComplexity(path: string) {
   return segments.length > 3;
 }
 
+function extractPathParams(path: string): string[] {
+  const regex = /\{([^}]+)\}/g;
+  const params: string[] = [];
+  let match;
+  while ((match = regex.exec(path)) !== null) {
+    params.push(match[1]);
+  }
+  return params;
+}
+
+function toCamelCase(str: string) {
+  return str
+    .replace(/[-_ ]+(\w)/g, (_, c) => (c ? c.toUpperCase() : ''))
+    .replace(/^\w/, (c) => c.toLowerCase());
+}
+
+function suggestOperationId(
+  method: string,
+  resourceName: string,
+  pathParams: string[],
+  path: string
+) {
+  // simplifica resource a singular (muy básico)
+  let base = resourceName;
+  if (base.endsWith('s')) base = base.slice(0, -1);
+  const methodLower = method.toLowerCase();
+
+  if (pathParams.length) {
+    const byPart = pathParams
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join('And');
+    return toCamelCase(`${methodLower}_${base}_by_${byPart}`);
+  }
+
+  // si es colección (sin params) y es GET -> list
+  if (method === 'GET') {
+    return toCamelCase(`list_${resourceName}`);
+  }
+
+  return toCamelCase(`${methodLower}_${base}`);
+}
+
 export default function StepOperations() {
   const navigate = useNavigate();
-  const { resources, operations, addOperation, updateOperation, removeOperation } = useContract();
+  const {
+    resources,
+    operations,
+    addOperation,
+    updateOperation,
+    removeOperation,
+  } = useContract();
 
   const [selectedResource, setSelectedResource] = useState<string>(resources[0]?.name || '');
   const [currentOp, setCurrentOp] = useState<Partial<Operation>>({
@@ -26,40 +82,106 @@ export default function StepOperations() {
     pagination: false,
     sorting: false,
   });
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+
+  // Sync selectedResource when resources change
+  useEffect(() => {
+    if (!selectedResource && resources.length) {
+      setSelectedResource(resources[0].name);
+    }
+  }, [resources, selectedResource]);
+
+  // When path or method or resource changes, auto-infer path params and operationId if empty or not editing
+  useEffect(() => {
+    if (!currentOp.path) return;
+
+    const pathParams = extractPathParams(currentOp.path);
+    setCurrentOp((prev) => {
+      // infer path parameters: add missing required path params
+      const existingParams = prev.parameters || [];
+      const inferred: Parameter[] = [...existingParams];
+
+      pathParams.forEach((p) => {
+        if (!existingParams.find((ep) => ep.name === p && ep.in === 'path')) {
+          inferred.push({
+            name: p,
+            in: 'path',
+            required: true,
+            schema: 'string',
+          });
+        }
+      });
+
+      // remove path params that no longer exist
+      const filtered = inferred.filter((param) => {
+        if (param.in === 'path') {
+          return pathParams.includes(param.name);
+        }
+        return true;
+      });
+
+      // suggest operationId only if not editing existing or user hasn't overridden
+      let suggestedId = prev.operationId || '';
+      if (editingIndex === null) {
+        const opId = suggestOperationId(
+          prev.method || 'get',
+          selectedResource,
+          pathParams,
+          prev.path || ''
+        );
+        suggestedId = opId;
+      }
+
+      return {
+        ...prev,
+        parameters: filtered,
+        operationId: suggestedId,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentOp.path, currentOp.method, selectedResource]);
+
+  const existingOps = operations[selectedResource] || [];
 
   const handleAddParam = () => {
-    const newParam: Parameter = {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: 'string',
-    };
     setCurrentOp((prev) => ({
       ...prev,
-      parameters: [...(prev.parameters || []), newParam],
+      parameters: [
+        ...(prev.parameters || []),
+        {
+          name: 'newParam',
+          in: 'query',
+          required: false,
+          schema: 'string',
+        } as Parameter,
+      ],
     }));
   };
 
   const handleAddResponse = () => {
-    const newResp: Response = {
-      statusCode: '200',
-      contentType: 'application/json',
-      bodySchema: '{}',
-    };
     setCurrentOp((prev) => ({
       ...prev,
-      responses: [...(prev.responses || []), newResp],
+      responses: [
+        ...(prev.responses || []),
+        {
+          statusCode: '200',
+          contentType: 'application/json',
+          bodySchema: '{}',
+        } as Response,
+      ],
     }));
   };
 
   const handleAddError = () => {
-    const newErr: ErrorDef = {
-      code: '400',
-      message: 'Error genérico',
-    };
     setCurrentOp((prev) => ({
       ...prev,
-      errors: [...(prev.errors || []), newErr],
+      errors: [
+        ...(prev.errors || []),
+        {
+          code: '400',
+          message: 'Error genérico',
+        } as ErrorDef,
+      ],
     }));
   };
 
@@ -81,7 +203,12 @@ export default function StepOperations() {
       sorting: !!currentOp.sorting,
     };
 
-    addOperation(selectedResource, op);
+    if (editingIndex !== null) {
+      updateOperation(selectedResource, editingIndex, op);
+    } else {
+      addOperation(selectedResource, op);
+    }
+
     // reset
     setCurrentOp({
       method: 'GET',
@@ -94,32 +221,59 @@ export default function StepOperations() {
       pagination: false,
       sorting: false,
     });
+    setEditingIndex(null);
   };
 
-  const handleEditOperation = (index: number) => {
-    if (!selectedResource) return;
-    const existing = operations[selectedResource] || [];
-    const op = existing[index];
-    updateOperation(selectedResource, index, op);
+  const startEdit = (idx: number) => {
+    const op = existingOps[idx];
+    setCurrentOp({ ...op });
+    setEditingIndex(idx);
   };
 
-  const existingOps = operations[selectedResource] || [];
+  const cancelEdit = () => {
+    setCurrentOp({
+      method: 'GET',
+      path: '',
+      operationId: '',
+      parameters: [],
+      responses: [],
+      errors: [],
+      filters: false,
+      pagination: false,
+      sorting: false,
+    });
+    setEditingIndex(null);
+  };
 
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-semibold text-gray-800">Paso 3: Operaciones por recurso</h2>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Lista de recursos y sus operaciones */}
+        {/* Selección de recurso y lista de operaciones */}
         <div className="space-y-4">
           <div>
             <label className="block font-medium text-sm text-gray-700">Recurso</label>
             <select
               value={selectedResource}
-              onChange={(e) => setSelectedResource(e.target.value)}
+              onChange={(e) => {
+                setSelectedResource(e.target.value);
+                setEditingIndex(null);
+                setCurrentOp({
+                  method: 'GET',
+                  path: '',
+                  operationId: '',
+                  parameters: [],
+                  responses: [],
+                  errors: [],
+                  filters: false,
+                  pagination: false,
+                  sorting: false,
+                });
+              }}
               className="mt-1 w-full border rounded-lg px-3 py-2"
             >
-              {resources.map((r) => (
+              {resources.map((r: Resource) => (
                 <option key={r.name} value={r.name}>
                   {r.name}
                 </option>
@@ -133,7 +287,7 @@ export default function StepOperations() {
               <ul className="space-y-2">
                 {existingOps.map((op, idx) => (
                   <li key={idx} className="border p-2 rounded flex justify-between items-start">
-                    <div>
+                    <div className="flex flex-col gap-1">
                       <div className="flex gap-2 items-center">
                         <span className="font-medium">{op.method}</span>
                         <code>{op.path}</code> — <span>{op.operationId}</span>
@@ -145,9 +299,7 @@ export default function StepOperations() {
                     </div>
                     <div className="flex flex-col gap-1">
                       <button
-                        onClick={() => {
-                          setCurrentOp(op);
-                        }}
+                        onClick={() => startEdit(idx)}
                         className="text-sm px-2 py-1 border rounded hover:bg-gray-100"
                       >
                         Editar
@@ -168,14 +320,16 @@ export default function StepOperations() {
           </div>
         </div>
 
-        {/* Formulario nueva operación */}
+        {/* Formulario de operación */}
         <div className="space-y-4 bg-white p-4 rounded-lg shadow">
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="flex justify-between items-center">
             <div>
               <label className="block font-medium text-sm text-gray-700">Método</label>
               <select
                 value={currentOp.method}
-                onChange={(e) => setCurrentOp((prev) => ({ ...prev, method: e.target.value as any }))}
+                onChange={(e) =>
+                  setCurrentOp((prev) => ({ ...prev, method: e.target.value as any }))
+                }
                 className="mt-1 w-full border rounded-lg px-3 py-2"
               >
                 {HTTP_METHODS.map((m) => (
@@ -185,7 +339,6 @@ export default function StepOperations() {
                 ))}
               </select>
             </div>
-
             <div>
               <label className="block font-medium text-sm text-gray-700">Path relativo</label>
               <input
@@ -278,13 +431,22 @@ export default function StepOperations() {
             </button>
           </div>
 
-          <div className="flex justify-end pt-2">
+          <div className="flex gap-2 items-center">
             <button
               onClick={handleSaveOperation}
               className="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded"
             >
-              Agregar operación
+              {editingIndex !== null ? 'Actualizar operación' : 'Agregar operación'}
             </button>
+            {editingIndex !== null && (
+              <button
+                onClick={cancelEdit}
+                className="bg-gray-300 px-5 py-2 rounded"
+                type="button"
+              >
+                Cancelar
+              </button>
+            )}
           </div>
         </div>
       </div>
